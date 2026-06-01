@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+logs/
+.playwright-mcp/
+.env
+.env.*
+!.env.example
+*.secret
+*.log
