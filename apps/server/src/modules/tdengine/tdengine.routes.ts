@@ -47,6 +47,7 @@ const updateSchema = z.object({
 const deleteSchema = z.object({
   database: z.string().trim().min(1),
   table: z.string().trim().min(1),
+  targetTable: z.string().trim().min(1).optional(),
   timestamp: z.string().trim().min(1),
   confirmText: z.string().optional()
 });
@@ -130,7 +131,7 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
         success: true,
         requestId: request.id
       });
-      return { sql, result };
+      return { sql, result: serializeBigInt(result) };
     } catch (error) {
       writeFailureAudit(request, connection, body.database, body.table, "create", "medium", sql, error, undefined, body.values);
       throw error;
@@ -185,7 +186,7 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
         success: true,
         requestId: request.id
       });
-      return { sql, result };
+      return { sql, result: serializeBigInt(result) };
     } catch (error) {
       writeFailureAudit(request, connection, body.database, body.table, "update", "medium", sql, error, body.original, body.values);
       throw error;
@@ -197,7 +198,8 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
     const body = deleteSchema.parse(request.body);
     const connection = getConnection(params.connectionId);
     const password = resolveConnectionSecret(connection);
-    const confirmSql = `SELECT * FROM ${quoteFullName(body.database, body.table)} WHERE ${quoteIdentifier("ts")} = ${sqlTimestampValue(body.timestamp)} LIMIT 2`;
+    let deleteTable = resolveDeleteTable(body);
+    const confirmSql = `SELECT * FROM ${quoteFullName(body.database, deleteTable)} WHERE ${quoteIdentifier("ts")} = ${sqlTimestampValue(body.timestamp)} LIMIT 2`;
     const rows = await withTdengineConnection(connection, password, async (client) => normalizeQueryResult(await client.query(confirmSql)));
     if (!rows.length) {
       throw new AppError("TDENGINE_ROW_NOT_FOUND", "未找到待删除数据", 404);
@@ -205,25 +207,29 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
     if (rows.length > 1) {
       throw new AppError("TDENGINE_ROW_NOT_UNIQUE", "待删除数据无法唯一定位", 409);
     }
-    return { sql: buildDeleteSql(body.database, body.table, body.timestamp), riskLevel: "high", operation: "delete", row: rows[0] };
+    deleteTable = resolveDeleteTable(body, rows[0]);
+    return { sql: buildDeleteSql(body.database, deleteTable, body.timestamp), riskLevel: "high", operation: "delete", row: rows[0] };
   });
 
   app.post("/tdengine/:connectionId/data/delete/execute", requirePermission(app, "tdengine:data:delete"), async (request) => {
     const params = connectionParamsSchema.parse(request.params);
     const body = deleteSchema.parse(request.body);
-    if (body.confirmText !== "DELETE") {
+    if (body.confirmText?.trim().toUpperCase() !== "DELETE") {
       throw new AppError("VALIDATION_FAILED", "删除操作必须输入 DELETE 确认", 400);
     }
     const connection = getConnection(params.connectionId);
     const password = resolveConnectionSecret(connection);
-    const sql = buildDeleteSql(body.database, body.table, body.timestamp);
+    let deleteTable = resolveDeleteTable(body);
+    let sql = buildDeleteSql(body.database, deleteTable, body.timestamp);
     let before: unknown;
     try {
       const result = await withTdengineConnection(connection, password, async (client) => {
-        before = await selectUniqueRow(client, body.database, body.table, body.timestamp);
+        before = await selectUniqueRow(client, body.database, deleteTable, body.timestamp);
         if (!before) {
           throw new AppError("TDENGINE_ROW_NOT_FOUND", "待删除数据不存在", 404);
         }
+        deleteTable = resolveDeleteTable(body, before);
+        sql = buildDeleteSql(body.database, deleteTable, body.timestamp);
         return client.exec(sql);
       });
       writeAuditLog({
@@ -232,7 +238,7 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
         connectionId: connection.id,
         connectionName: connection.name,
         databaseName: body.database,
-        tableName: body.table,
+        tableName: deleteTable,
         operation: "delete",
         riskLevel: "high",
         sqlText: sql,
@@ -240,7 +246,7 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
         success: true,
         requestId: request.id
       });
-      return { sql, result };
+      return { sql, result: serializeBigInt(result) };
     } catch (error) {
       writeFailureAudit(request, connection, body.database, body.table, "delete", "high", sql, error, before);
       throw error;
@@ -253,7 +259,7 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
     if (!risk.allowed) {
       throw new AppError("TDENGINE_UNSAFE_SQL", risk.reason ?? "SQL 不允许执行", 400);
     }
-    return { sql: ensureSelectHasLimit(body.sql), ...risk };
+    return { sql: buildConsoleSqlPreview(body.database, ensureSelectHasLimit(body.sql)), ...risk };
   });
 
   app.post("/tdengine/:connectionId/sql/execute", requirePermission(app, "tdengine:sql:execute"), async (request) => {
@@ -270,10 +276,14 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
     const connection = getConnection(params.connectionId);
     const password = resolveConnectionSecret(connection);
     const finalSql = ensureSelectHasLimit(body.sql);
+    const previewSql = buildConsoleSqlPreview(body.database ?? connection.default_database ?? undefined, finalSql);
     try {
-      const result = await withTdengineConnection(connection, password, async (client) =>
-        risk.riskLevel === "low" ? client.query(finalSql) : client.exec(finalSql)
-      );
+      const result = await withTdengineConnection(connection, password, async (client) => {
+        if (body.database) {
+          await client.exec(`USE ${quoteIdentifier(body.database)}`);
+        }
+        return risk.riskLevel === "low" ? client.query(finalSql) : client.exec(finalSql);
+      });
       writeAuditLog({
         userId: request.currentUser!.id,
         username: request.currentUser!.username,
@@ -282,13 +292,13 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
         databaseName: body.database ?? connection.default_database,
         operation: risk.operation,
         riskLevel: risk.riskLevel,
-        sqlText: finalSql,
+        sqlText: previewSql,
         success: true,
         requestId: request.id
       });
-      return { sql: finalSql, rows: risk.riskLevel === "low" ? normalizeQueryResult(result) : [], result };
+      return { sql: previewSql, rows: risk.riskLevel === "low" ? normalizeQueryResult(result) : [], result: serializeBigInt(result) };
     } catch (error) {
-      writeFailureAudit(request, connection, body.database ?? connection.default_database, null, risk.operation, risk.riskLevel, finalSql, error);
+      writeFailureAudit(request, connection, body.database ?? connection.default_database, null, risk.operation, risk.riskLevel, previewSql, error);
       throw error;
     }
   });
@@ -296,7 +306,16 @@ export async function registerTdengineRoutes(app: FastifyInstance) {
 
 type QueryClient = {
   query: (sql: string) => Promise<unknown>;
+  exec?: (sql: string) => Promise<unknown>;
 };
+
+function buildConsoleSqlPreview(database: string | undefined, sql: string) {
+  const trimmedDatabase = database?.trim();
+  if (!trimmedDatabase) {
+    return sql;
+  }
+  return `USE ${quoteIdentifier(trimmedDatabase)};\n${sql}`;
+}
 
 function resolveWriteTable(body: { table: string; targetTable?: string; values: Record<string, unknown> }) {
   const targetTable = body.targetTable || readStringField(body.values, "tbname") || readStringField(body.values, "table_name");
@@ -309,11 +328,24 @@ function resolveWriteTable(body: { table: string; targetTable?: string; values: 
   return targetTable;
 }
 
+function resolveDeleteTable(body: { table: string; targetTable?: string }, row?: unknown) {
+  if (body.targetTable) {
+    return body.targetTable;
+  }
+  if (row && typeof row === "object") {
+    const tbname = readStringField(row as Record<string, unknown>, "tbname");
+    if (tbname) {
+      return tbname;
+    }
+  }
+  return body.table;
+}
+
 function resolveInsertExcludeColumns(body: { targetTable?: string; values: Record<string, unknown> }) {
   if (!isStableWrite(body)) {
     return [];
   }
-  return ["tbname", "table_name", "stable_name", "device_warn_id", "device_id", "device_code"];
+  return ["tbname", "table_name", "stable_name", "device_warn_id", "device_id", "device_code", "device_serial_number", "device_type"];
 }
 
 function isStableWrite(body: { targetTable?: string; values: Record<string, unknown> }) {
@@ -335,6 +367,19 @@ function buildSelectFields(fields: string[] | undefined) {
     return ["tbname", "*"].join(", ");
   }
   return normalized.map(quoteIdentifier).join(", ");
+}
+
+function serializeBigInt<T>(value: T): T {
+  if (typeof value === "bigint") {
+    return value.toString() as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeBigInt(item)) as T;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, serializeBigInt(item)])) as T;
+  }
+  return value;
 }
 
 async function selectUniqueRow(client: QueryClient, database: string, table: string, timestamp: string) {

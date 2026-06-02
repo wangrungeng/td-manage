@@ -85,6 +85,31 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS sql_script_folders (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sql_scripts (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  folder_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sql_text TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (folder_id) REFERENCES sql_script_folders(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_sql_script_folders_user ON sql_script_folders(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_sql_scripts_user_folder ON sql_scripts(user_id, folder_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,

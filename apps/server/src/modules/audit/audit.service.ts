@@ -43,13 +43,17 @@ export function writeAuditLog(input: AuditInput) {
     operation: input.operation,
     risk_level: input.riskLevel,
     sql_text: maskSecret(input.sqlText),
-    sql_params_json: input.sqlParams === undefined ? null : JSON.stringify(input.sqlParams),
-    before_json: input.before === undefined ? null : JSON.stringify(input.before),
-    after_json: input.after === undefined ? null : JSON.stringify(input.after),
+    sql_params_json: safeJson(input.sqlParams),
+    before_json: safeJson(input.before),
+    after_json: safeJson(input.after),
     affected_rows: input.affectedRows ?? null,
     success: input.success ? 1 : 0,
     error_message: input.errorMessage ? maskSecret(input.errorMessage) : null,
     request_id: input.requestId,
     created_at: new Date().toISOString()
   });
+}
+
+function safeJson(value: unknown) {
+  return value === undefined ? null : JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item));
 }

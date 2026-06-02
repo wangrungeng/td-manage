@@ -72,7 +72,8 @@ export function buildInsertSql(database: string, table: string, values: Record<s
 }
 
 export function buildDeleteSql(database: string, table: string, timestamp: string) {
-  return `DELETE FROM ${quoteFullName(database, table)} WHERE ${quoteIdentifier("ts")} = ${sqlTimestampValue(timestamp)}`;
+  const timestampValue = sqlTimestampValue(timestamp);
+  return `DELETE FROM ${quoteFullName(database, table)} WHERE ${quoteIdentifier("ts")} >= ${timestampValue} AND ${quoteIdentifier("ts")} <= ${timestampValue}`;
 }
 
 export function classifySqlRisk(sql: string) {

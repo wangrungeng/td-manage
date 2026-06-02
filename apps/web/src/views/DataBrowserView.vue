@@ -89,7 +89,7 @@
     <el-input v-model="deleteConfirm" placeholder="输入 DELETE" />
     <template #footer>
       <el-button @click="deleteVisible = false">取消</el-button>
-      <el-button type="danger" :disabled="deleteConfirm !== 'DELETE'" @click="executeDelete">确认删除</el-button>
+      <el-button type="danger" :disabled="deleteConfirm.trim().toUpperCase() !== 'DELETE'" @click="executeDelete">确认删除</el-button>
     </template>
   </el-dialog>
 </template>
@@ -137,6 +137,7 @@ const previewSql = ref("");
 const deleteVisible = ref(false);
 const deleteConfirm = ref("");
 const deletingTimestamp = ref("");
+const deletingTargetTable = ref("");
 const treeProps = { label: "label", isLeaf: "leaf" };
 const treeData = computed<TreeNodeData[]>(() =>
   connections.value.map((connection) => ({
@@ -339,9 +340,15 @@ function buildEditPayload(values: Record<string, unknown>, original?: Record<str
 
 async function openDelete(row: Record<string, unknown>) {
   deletingTimestamp.value = String(row.ts || row.TS || "");
+  deletingTargetTable.value = selectedTableType.value === "stable" ? readRowStringField(row, "tbname") : "";
+  if (selectedTableType.value === "stable" && !deletingTargetTable.value) {
+    ElMessage.error("超级表删除必须先定位到子表 tbname");
+    return;
+  }
   deleteConfirm.value = "";
   const result = await http.post<{ sql: string }>(`/tdengine/${selectedConnection.value}/data/delete/preview`, {
     ...query,
+    targetTable: deletingTargetTable.value || undefined,
     timestamp: deletingTimestamp.value
   });
   previewSql.value = result.sql;
@@ -351,11 +358,18 @@ async function openDelete(row: Record<string, unknown>) {
 async function executeDelete() {
   await http.post(`/tdengine/${selectedConnection.value}/data/delete/execute`, {
     ...query,
+    targetTable: deletingTargetTable.value || undefined,
     timestamp: deletingTimestamp.value,
-    confirmText: deleteConfirm.value
+    confirmText: deleteConfirm.value.trim().toUpperCase()
   });
   ElMessage.success("删除成功");
   deleteVisible.value = false;
   await loadRows();
+}
+
+function readRowStringField(row: Record<string, unknown>, field: string) {
+  const entry = Object.entries(row).find(([key]) => key.toLowerCase() === field.toLowerCase());
+  const value = entry?.[1];
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 </script>

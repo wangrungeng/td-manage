@@ -7,6 +7,7 @@ import { registerAuthPlugin } from "./plugins/auth.js";
 import { registerAuditRoutes } from "./modules/audit/audit.routes.js";
 import { registerAuthRoutes } from "./modules/auth/auth.routes.js";
 import { registerConnectionRoutes } from "./modules/connections/connections.routes.js";
+import { registerSqlScriptRoutes } from "./modules/sql-scripts/sql-scripts.routes.js";
 import { destroyTdengineConnector } from "./modules/tdengine/tdengine.client.js";
 import { registerTdengineRoutes } from "./modules/tdengine/tdengine.routes.js";
 import { registerUserRoutes } from "./modules/users/users.routes.js";
@@ -36,6 +37,7 @@ await app.register(async (api) => {
   await registerUserRoutes(api);
   await registerConnectionRoutes(api);
   await registerTdengineRoutes(api);
+  await registerSqlScriptRoutes(api);
   await registerAuditRoutes(api);
 }, { prefix: "/api" });
 
